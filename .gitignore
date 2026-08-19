@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Generated app bundles and build output
+build/
+DerivedData/
+
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+
+# Local application data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+
+# Temporary files
+*.tmp
+*.swp
+*~
