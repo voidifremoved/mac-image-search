@@ -45,6 +45,27 @@ public struct ImageAnalysisRepository: Sendable {
         }
     }
 
+    public func getCurrent(
+        contentID: Int64,
+        baseURLFingerprint: String,
+        model: String,
+        promptVersion: Int,
+        schemaVersion: Int
+    ) throws -> ImageAnalysis? {
+        try database.read { db in
+            try ImageAnalysisRecord
+                .filter(
+                    ImageAnalysisRecord.Columns.contentId == contentID &&
+                    ImageAnalysisRecord.Columns.baseUrlFingerprint == baseURLFingerprint &&
+                    ImageAnalysisRecord.Columns.model == model &&
+                    ImageAnalysisRecord.Columns.promptVersion == promptVersion &&
+                    ImageAnalysisRecord.Columns.schemaVersion == schemaVersion &&
+                    ImageAnalysisRecord.Columns.isCurrent == true
+                )
+                .fetchOne(db)?.toDomain()
+        }
+    }
+
     public func get(id: Int64) throws -> ImageAnalysis? {
         try database.read { db in
             try ImageAnalysisRecord.fetchOne(db, key: id)?.toDomain()

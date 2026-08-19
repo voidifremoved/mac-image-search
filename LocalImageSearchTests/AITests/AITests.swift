@@ -72,4 +72,32 @@ struct AITests {
         #expect(searchableText.contains("SPEED LIMIT 45"))
         #expect(searchableText.contains("Red Sports Car"))
     }
+
+    @Test("Version 2 analysis keeps summary and complete text separate")
+    func testSummaryAndFullTextParsing() throws {
+        let client = OpenAICompatibleVisionClient(
+            configuration: AIProviderConfiguration(),
+            secretStore: InMemorySecretStore()
+        )
+        let fullText = String(repeating: "Invoice line item 123 — £45.00\n", count: 180)
+        let payload: [String: Any] = [
+            "short_title": "Detailed Invoice Screenshot",
+            "summary": "A screenshot of a multi-line invoice with itemized charges.",
+            "categories": ["documents", "finance"],
+            "objects": ["invoice", "table"],
+            "scene": NSNull(),
+            "dominant_colors": ["white", "black"],
+            "full_text": fullText,
+            "people_count": 0,
+            "time_of_day": "unknown",
+            "search_keywords": ["receipt", "billing"]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let parsed = try client.parseAnalysisContent(String(decoding: data, as: UTF8.self))
+
+        #expect(parsed.description == "A screenshot of a multi-line invoice with itemized charges.")
+        #expect(parsed.visibleText == fullText)
+        #expect(parsed.visibleText!.count > 4_000)
+        #expect(parsed.buildSearchableText().contains("Invoice line item 123"))
+    }
 }

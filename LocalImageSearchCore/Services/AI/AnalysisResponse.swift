@@ -14,15 +14,47 @@ public struct AnalysisResponse: Sendable, Codable, Equatable {
 
     public enum CodingKeys: String, CodingKey {
         case shortTitle = "short_title"
-        case description
+        case summary
+        case legacyDescription = "description"
         case categories
         case objects
         case scene
         case dominantColors = "dominant_colors"
-        case visibleText = "visible_text"
+        case fullText = "full_text"
+        case legacyVisibleText = "visible_text"
         case peopleCount = "people_count"
         case timeOfDay = "time_of_day"
         case searchKeywords = "search_keywords"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        shortTitle = try container.decode(String.self, forKey: .shortTitle)
+        description = try container.decodeIfPresent(String.self, forKey: .summary)
+            ?? container.decode(String.self, forKey: .legacyDescription)
+        categories = try container.decode([String].self, forKey: .categories)
+        objects = try container.decode([String].self, forKey: .objects)
+        scene = try container.decodeIfPresent(String.self, forKey: .scene)
+        dominantColors = try container.decodeIfPresent([String].self, forKey: .dominantColors) ?? []
+        visibleText = try container.decodeIfPresent(String.self, forKey: .fullText)
+            ?? container.decodeIfPresent(String.self, forKey: .legacyVisibleText)
+        peopleCount = try container.decodeIfPresent(Int.self, forKey: .peopleCount)
+        timeOfDay = try container.decodeIfPresent(String.self, forKey: .timeOfDay)
+        searchKeywords = try container.decodeIfPresent([String].self, forKey: .searchKeywords) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(shortTitle, forKey: .shortTitle)
+        try container.encode(description, forKey: .summary)
+        try container.encode(categories, forKey: .categories)
+        try container.encode(objects, forKey: .objects)
+        try container.encodeIfPresent(scene, forKey: .scene)
+        try container.encode(dominantColors, forKey: .dominantColors)
+        try container.encodeIfPresent(visibleText, forKey: .fullText)
+        try container.encodeIfPresent(peopleCount, forKey: .peopleCount)
+        try container.encodeIfPresent(timeOfDay, forKey: .timeOfDay)
+        try container.encode(searchKeywords, forKey: .searchKeywords)
     }
 
     public init(
@@ -66,7 +98,7 @@ public struct AnalysisResponse: Sendable, Codable, Equatable {
             components.append("colors: \(dominantColors.joined(separator: ", "))")
         }
         if let visibleText, !visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            components.append("text: \(visibleText)")
+            components.append("full text transcription:\n\(visibleText)")
         }
         if !searchKeywords.isEmpty {
             components.append("keywords: \(searchKeywords.joined(separator: ", "))")

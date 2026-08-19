@@ -84,6 +84,38 @@ struct DatabaseTests {
         #expect(matches.first?.analysisID == saved.id)
     }
 
+    @Test("Analysis storage preserves long full-text transcription")
+    func testFullTextTranscriptionRoundTrip() throws {
+        let db = try AppDatabase.inMemory()
+        let contentRepo = ImageContentRepository(database: db)
+        let analysisRepo = ImageAnalysisRepository(database: db)
+        let content = try contentRepo.getOrCreate(
+            sha256: Data(repeating: 0x71, count: 32),
+            byteCount: 4096
+        )
+        let transcription = String(repeating: "Account 0192 | Line item | £123.45\n", count: 300)
+        let analysis = ImageAnalysis(
+            contentID: content.id!,
+            providerKind: "test",
+            baseURLFingerprint: "test",
+            model: "vision",
+            description: "A detailed financial statement.",
+            shortTitle: "Financial Statement",
+            categories: ["documents"],
+            objects: ["table"],
+            visibleText: transcription,
+            searchableText: "summary: financial statement\nfull text transcription:\n\(transcription)"
+        )
+        _ = try analysisRepo.save(analysis)
+
+        let fetched = try analysisRepo.getCurrent(contentID: content.id!)
+        #expect(fetched?.description == "A detailed financial statement.")
+        #expect(fetched?.visibleText == transcription)
+        #expect(fetched!.visibleText!.count > 10_000)
+        let textMatches = try SearchRepository(database: db).searchFTS(query: "Account 0192")
+        #expect(!textMatches.isEmpty)
+    }
+
     @Test("Categories are counted and can be used for drilldown")
     func testCategorySummariesAndBrowse() async throws {
         let db = try AppDatabase.inMemory()

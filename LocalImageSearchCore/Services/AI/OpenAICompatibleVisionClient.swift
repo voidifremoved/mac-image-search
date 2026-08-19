@@ -43,7 +43,7 @@ public final class OpenAICompatibleVisionClient: VisionAnalyzer, Sendable {
         let requestBody: [String: Any] = [
             "model": configuration.model,
             "temperature": 0,
-            "max_tokens": 1000,
+            "max_tokens": 6000,
             "messages": [
                 [
                     "role": "system",
@@ -54,7 +54,7 @@ public final class OpenAICompatibleVisionClient: VisionAnalyzer, Sendable {
                     "content": [
                         [
                             "type": "text",
-                            "text": "Analyze this image and return the structured JSON object."
+                            "text": "Analyze this image, summarize it, and fully transcribe every legible piece of text. Return the structured JSON object."
                         ],
                         [
                             "type": "image_url",
@@ -209,7 +209,9 @@ public final class OpenAICompatibleVisionClient: VisionAnalyzer, Sendable {
             .prefix(maxArrLen))
 
         let cleanDesc = String(response.description.prefix(2000))
-        let cleanText = response.visibleText.map { String($0.prefix(4000)) }
+        // Preserve complete document/screenshot transcription. A generous safety ceiling
+        // protects local storage from a malicious response without clipping normal OCR output.
+        let cleanText = response.visibleText.map { String($0.prefix(100_000)) }
 
         return AnalysisResponse(
             shortTitle: String(response.shortTitle.prefix(120)),

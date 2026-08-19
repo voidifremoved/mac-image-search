@@ -74,9 +74,23 @@ public struct InspectorView: View {
                     // Visible Text
                     if let text = result.analysis?.visibleText, !text.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Detected Text").font(.subheadline).bold()
+                            HStack {
+                                Text("Full Text Transcription").font(.subheadline).bold()
+                                Spacer()
+                                Button {
+                                    #if os(macOS)
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(text, forType: .string)
+                                    #endif
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                            }
                             Text(text)
-                                .font(.caption)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(Color.secondary.opacity(0.1))
