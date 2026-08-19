@@ -4,6 +4,14 @@ import CoreGraphics
 import ImageIO
 @testable import LocalImageSearchCore
 
+private struct FixedEmbeddingService: EmbeddingService {
+    let fingerprint = EmbeddingFingerprint(engineKind: "test", model: "fixed", revision: "1", dimension: 3)
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        texts.map { _ in [1, 0, 0] }
+    }
+}
+
 @Suite("Indexing Pipeline & Coordinator Tests")
 struct IndexingTests {
     @Test("End-to-end pipeline processes asset with mock vision and local embeddings")
@@ -16,7 +24,7 @@ struct IndexingTests {
         let embeddingRepo = EmbeddingRepository(database: db)
 
         let mockVision = MockVisionAnalyzer()
-        let embeddingService = AppleSentenceEmbeddingService()
+        let embeddingService = FixedEmbeddingService()
         let vectorIndex = ExactVectorIndex()
         let providerConfig = AIProviderConfiguration()
 
@@ -78,6 +86,23 @@ struct IndexingTests {
         let currentAnalyses = try analysisRepo.getAllCurrent()
         #expect(currentAnalyses.count == 1)
         #expect(currentAnalyses.first?.shortTitle == "Test Mock Image")
+
+        // A provider/model change must not resend an unchanged image to vision analysis.
+        let replacementVision = MockVisionAnalyzer()
+        let replacementPipeline = IndexPipeline(
+            database: db,
+            contentRepository: contentRepo,
+            assetRepository: assetRepo,
+            analysisRepository: analysisRepo,
+            embeddingRepository: embeddingRepo,
+            visionAnalyzer: replacementVision,
+            embeddingService: embeddingService,
+            vectorIndex: vectorIndex,
+            providerConfig: AIProviderConfiguration(model: "a-different-model")
+        )
+        try await replacementPipeline.processAsset(assetID: savedAsset.id!, fileURL: imageURL)
+        #expect(replacementVision.analyzeCallCount == 0)
+        #expect(try analysisRepo.getAllCurrent().count == 1)
     }
 
     @Test("RetryPolicy calculates jittered exponential backoff and respects max attempts")

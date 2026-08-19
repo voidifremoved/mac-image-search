@@ -83,6 +83,7 @@ public actor IndexCoordinator {
         totalJobCount = 0
         currentFileName = nil
         let roots = try folderAccessStore.getResolvedRoots()
+        let embeddingFingerprint = try? await embeddingService.fingerprint
 
         for root in roots {
             let scanID = UUID()
@@ -110,11 +111,23 @@ public actor IndexCoordinator {
             try assetRepository.upsertBatch(assetsToUpsert)
             _ = try assetRepository.markMissingUnseen(folderID: root.folderID, currentScanID: scanID)
 
-            // Queue indexing jobs for newly discovered assets
-            for asset in assetsToUpsert {
+            // Process chronologically. Creation date is preferred; modification date is
+            // the stable fallback for formats/filesystems without a creation timestamp.
+            let chronologicalAssets = assetsToUpsert.sorted {
+                let lhsDate = $0.createdAt ?? $0.modifiedAt
+                let rhsDate = $1.createdAt ?? $1.modifiedAt
+                if lhsDate == rhsDate { return $0.normalizedRelativePath < $1.normalizedRelativePath }
+                return lhsDate < rhsDate
+            }
+
+            // Only queue genuinely new or incomplete assets. Interrupted active jobs are
+            // already persisted and enqueueJob de-duplicates them.
+            for asset in chronologicalAssets {
                 if let savedAsset = try assetRepository.get(folderID: root.folderID, normalizedRelativePath: asset.normalizedRelativePath),
-                   let assetID = savedAsset.id {
-                    let job = IndexJob(assetID: assetID, kind: .analyze, priority: 1)
+                   let assetID = savedAsset.id,
+                   try assetRepository.needsIndexing(assetID: assetID, embeddingFingerprint: embeddingFingerprint) {
+                    let fileDate = savedAsset.createdAt ?? savedAsset.modifiedAt
+                    let job = IndexJob(assetID: assetID, kind: .analyze, priority: 1, createdAt: fileDate)
                     if try await scheduler.enqueueJob(job) {
                         totalJobCount += 1
                     }

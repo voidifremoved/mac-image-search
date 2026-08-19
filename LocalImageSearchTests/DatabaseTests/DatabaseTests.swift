@@ -3,6 +3,16 @@ import Foundation
 import GRDB
 @testable import LocalImageSearchCore
 
+private struct UnavailableEmbeddingService: EmbeddingService {
+    var fingerprint: EmbeddingFingerprint {
+        get async throws { throw AppError.embeddingUnavailable(detail: "Unavailable in test") }
+    }
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        throw AppError.embeddingUnavailable(detail: "Unavailable in test")
+    }
+}
+
 @Suite("Database Foundation Tests")
 struct DatabaseTests {
     @Test("In-memory database creates schema and passes integrity check")
@@ -77,6 +87,7 @@ struct DatabaseTests {
             searchableText: "ocean sunset sailboats gold"
         )
         let saved = try analysisRepo.save(analysis)
+
         #expect(saved.id != nil)
 
         let matches = try searchRepo.searchFTS(query: "sailboats sunset")
@@ -150,19 +161,38 @@ struct DatabaseTests {
             shortTitle: "Forest Trail",
             categories: ["Nature", "Landscape"],
             objects: ["trees", "trail"],
-            searchableText: "forest trail nature landscape"
+            visibleText: "FOREST PERMIT\nReference: AbC-123",
+            searchableText: "forest trail nature landscape FOREST PERMIT Reference AbC-123"
         )
         let saved = try analysisRepo.save(analysis)
+
+        // Existing analysis is retained even when provider/prompt settings change.
+        #expect(try assetRepo.needsIndexing(assetID: asset.id!, embeddingFingerprint: nil) == false)
+        let fingerprint = EmbeddingFingerprint(engineKind: "test", model: "embed", revision: "1", dimension: 2)
+        #expect(try assetRepo.needsIndexing(assetID: asset.id!, embeddingFingerprint: fingerprint))
+        _ = try EmbeddingRepository(database: db).save(StoredEmbedding(
+            analysisID: saved.id!,
+            engineKind: fingerprint.engineKind,
+            model: fingerprint.model,
+            revision: fingerprint.revision,
+            dimension: fingerprint.dimension,
+            vector: Data(count: fingerprint.dimension * MemoryLayout<Float>.size),
+            sourceTextSHA256: Data()
+        ))
+        #expect(try assetRepo.needsIndexing(assetID: asset.id!, embeddingFingerprint: fingerprint) == false)
 
         let summaries = try searchRepo.categorySummaries()
         #expect(summaries.contains(CategorySummary(name: "Nature", imageCount: 1)))
         #expect(summaries.contains(CategorySummary(name: "Landscape", imageCount: 1)))
         #expect(try searchRepo.browseAnalysisIDs(category: "nature") == [saved.id!])
         #expect(try searchRepo.browseAnalysisIDs(category: "portrait").isEmpty)
+        #expect(try searchRepo.searchFilenames(query: "forest").first?.analysisID == saved.id)
+        #expect(try searchRepo.searchExactVisibleText(query: "forest permit").first == saved.id)
+        #expect(try searchRepo.searchExactVisibleText(query: "permit reference").isEmpty)
 
         let service = SearchService(
             vectorIndex: ExactVectorIndex(),
-            embeddingService: AppleSentenceEmbeddingService(),
+            embeddingService: UnavailableEmbeddingService(),
             searchRepository: searchRepo,
             assetRepository: assetRepo,
             folderRepository: folderRepo,
@@ -172,6 +202,23 @@ struct DatabaseTests {
         #expect(results.count == 1)
         #expect(results.first?.analysis?.shortTitle == "Forest Trail")
         #expect(results.first?.resolvedURL.lastPathComponent == "forest.jpg")
+
+        let prefixResults = try await service.search(query: "fore", limit: 20)
+        #expect(prefixResults.first?.analysis?.shortTitle == "Forest Trail")
+        let filenameResults = try await service.search(query: "jpg", limit: 20)
+        #expect(filenameResults.first?.resolvedURL.lastPathComponent == "forest.jpg")
+        let exactTextResults = try await service.search(
+            query: "reference: abc-123",
+            filter: SearchFilter(exactImageTextOnly: true),
+            limit: 20
+        )
+        #expect(exactTextResults.first?.analysis?.shortTitle == "Forest Trail")
+        let nonExactResults = try await service.search(
+            query: "forest reference",
+            filter: SearchFilter(exactImageTextOnly: true),
+            limit: 20
+        )
+        #expect(nonExactResults.isEmpty)
     }
 
     @Test("Index job idempotency and eligible worker fetch")
@@ -196,5 +243,22 @@ struct DatabaseTests {
 
         let next = try jobRepo.nextEligible()
         #expect(next == nil)
+    }
+
+    @Test("Index jobs are processed chronologically")
+    func testIndexJobChronologicalOrder() throws {
+        let db = try AppDatabase.inMemory()
+        let contentRepo = ImageContentRepository(database: db)
+        let jobRepo = IndexJobRepository(database: db)
+        let olderContent = try contentRepo.getOrCreate(sha256: Data(repeating: 0x10, count: 32), byteCount: 10)
+        let newerContent = try contentRepo.getOrCreate(sha256: Data(repeating: 0x20, count: 32), byteCount: 20)
+        let now = Date()
+        let newerJob = IndexJob(contentID: newerContent.id, kind: .analyze, priority: 1, createdAt: now)
+        let olderJob = IndexJob(contentID: olderContent.id, kind: .analyze, priority: 1, createdAt: now.addingTimeInterval(-3_600))
+
+        try jobRepo.enqueue(newerJob)
+        try jobRepo.enqueue(olderJob)
+
+        #expect(try jobRepo.nextEligible()?.id == olderJob.id)
     }
 }

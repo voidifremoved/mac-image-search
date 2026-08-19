@@ -1,11 +1,6 @@
 import Foundation
 
 public enum HybridRanker {
-    public static let kConstant: Float = 60.0
-    public static let semanticWeight: Float = 1.0
-    public static let lexicalWeight: Float = 0.65
-    public static let filenameBoostWeight: Float = 0.15
-
     public struct ScoredCandidate: Sendable {
         public let analysisID: Int64
         public var rrfScore: Float
@@ -13,64 +8,111 @@ public enum HybridRanker {
         public var lexicalScore: Float
     }
 
+    /// Combines vector similarity with deterministic matching across the fields users can see.
+    /// Low-similarity vector neighbors are deliberately removed: a nearest neighbor is not
+    /// necessarily a relevant result, especially in a small library.
     public static func fuse(
         semanticMatches: [VectorMatch],
         lexicalMatches: [SearchRepository.FTSMatch],
         query: String,
         candidateDetails: [Int64: (asset: ImageAsset, content: ImageContent, analysis: ImageAnalysis)]
     ) -> [ScoredCandidate] {
-        var scores: [Int64: ScoredCandidate] = [:]
-        let normalizedQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens = meaningfulTokens(query)
+        guard !tokens.isEmpty else { return [] }
 
-        // 1. Semantic RRF
-        for (rank, match) in semanticMatches.enumerated() {
-            let rrf = semanticWeight / (kConstant + Float(rank + 1))
-            if var existing = scores[match.analysisID] {
-                existing.rrfScore += rrf
-                existing.semanticScore = match.score
-                scores[match.analysisID] = existing
+        let semanticByID = Dictionary(uniqueKeysWithValues: semanticMatches.map { ($0.analysisID, $0.score) })
+        let lexicalRankByID = Dictionary(uniqueKeysWithValues: lexicalMatches.enumerated().map { ($0.element.analysisID, $0.offset) })
+        let bestSemantic = semanticMatches.map(\.score).max() ?? -1
+        let semanticIsUseful = bestSemantic >= 0.12
+        let semanticFloor = max(0.12, bestSemantic - 0.20)
+
+        var results: [ScoredCandidate] = []
+        results.reserveCapacity(candidateDetails.count)
+
+        for (analysisID, details) in candidateDetails {
+            let rawSemantic = semanticByID[analysisID] ?? -1
+            let passesSemanticCutoff = semanticIsUseful && rawSemantic >= semanticFloor
+            let fieldScore = metadataRelevance(query: query, tokens: tokens, details: details)
+            let lexicalRank = lexicalRankByID[analysisID]
+            let hasLexicalEvidence = lexicalRank != nil || fieldScore > 0
+
+            guard passesSemanticCutoff || hasLexicalEvidence else { continue }
+
+            let semanticRelevance: Float
+            if passesSemanticCutoff {
+                let range = max(0.0001, bestSemantic - semanticFloor)
+                semanticRelevance = 0.35 + (0.65 * min(1, max(0, (rawSemantic - semanticFloor) / range)))
             } else {
-                scores[match.analysisID] = ScoredCandidate(
-                    analysisID: match.analysisID,
-                    rrfScore: rrf,
-                    semanticScore: match.score,
-                    lexicalScore: 0
-                )
+                semanticRelevance = 0
             }
-        }
 
-        // 2. Lexical RRF
-        for (rank, match) in lexicalMatches.enumerated() {
-            let rrf = lexicalWeight / (kConstant + Float(rank + 1))
-            if var existing = scores[match.analysisID] {
-                existing.rrfScore += rrf
-                existing.lexicalScore = Float(match.rank)
-                scores[match.analysisID] = existing
+            let rankedLexical: Float
+            if let lexicalRank {
+                rankedLexical = 1 / (1 + Float(lexicalRank) * 0.12)
             } else {
-                scores[match.analysisID] = ScoredCandidate(
-                    analysisID: match.analysisID,
-                    rrfScore: rrf,
-                    semanticScore: 0,
-                    lexicalScore: Float(match.rank)
-                )
+                rankedLexical = 0
             }
+
+            // Exact/visible metadata evidence should beat a vaguely related vector result.
+            let combined = semanticRelevance * 0.48 + fieldScore * 0.42 + rankedLexical * 0.10
+            results.append(ScoredCandidate(
+                analysisID: analysisID,
+                rrfScore: combined,
+                semanticScore: rawSemantic == -1 ? 0 : rawSemantic,
+                lexicalScore: fieldScore
+            ))
         }
 
-        // 3. Filename exact match boost
-        if !normalizedQuery.isEmpty {
-            for (id, tuple) in candidateDetails {
-                let filename = (tuple.asset.relativePath as NSString).lastPathComponent.lowercased()
-                if filename.contains(normalizedQuery) {
-                    if var existing = scores[id] {
-                        existing.rrfScore += filenameBoostWeight
-                        scores[id] = existing
-                    }
-                }
-            }
+        return results.sorted {
+            if $0.rrfScore == $1.rrfScore { return $0.analysisID < $1.analysisID }
+            return $0.rrfScore > $1.rrfScore
         }
+    }
 
-        var results = Array(scores.values)
-        results.sort { $0.rrfScore > $1.rrfScore }
-        return results
+    private static func metadataRelevance(
+        query: String,
+        tokens: [String],
+        details: (asset: ImageAsset, content: ImageContent, analysis: ImageAnalysis)
+    ) -> Float {
+        let analysis = details.analysis
+        let fields: [(String, Float)] = [
+            (analysis.shortTitle, 1.0),
+            (analysis.categories.joined(separator: " "), 0.95),
+            (analysis.objects.joined(separator: " "), 0.9),
+            (analysis.scene ?? "", 0.85),
+            (analysis.description, 0.78),
+            (analysis.visibleText ?? "", 0.82),
+            ((details.asset.relativePath as NSString).lastPathComponent, 1.0)
+        ]
+
+        let normalizedQuery = normalized(query)
+        var best: Float = 0
+        for (field, weight) in fields where !field.isEmpty {
+            let normalizedField = normalized(field)
+            let fieldWords = Set(normalizedField.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
+            let matched = tokens.filter { token in
+                fieldWords.contains(where: { word in word == token || word.hasPrefix(token) || token.hasPrefix(word) })
+            }.count
+            guard matched > 0 else { continue }
+            var score = Float(matched) / Float(tokens.count)
+            if normalizedQuery.count >= 3 && normalizedField.contains(normalizedQuery) {
+                score = min(1, score + 0.3)
+            }
+            best = max(best, score * weight)
+        }
+        return best
+    }
+
+    private static func meaningfulTokens(_ value: String) -> [String] {
+        let stopWords: Set<String> = ["a", "an", "and", "are", "at", "for", "in", "is", "of", "on", "the", "to", "with"]
+        return normalized(value)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !stopWords.contains($0) }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
     }
 }

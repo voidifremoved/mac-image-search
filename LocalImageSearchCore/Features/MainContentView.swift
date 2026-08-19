@@ -10,6 +10,7 @@ public struct MainContentView: View {
 
     @ObservedObject public var env: AppEnvironment
     @State private var query = ""
+    @State private var exactImageTextOnly = false
     @State private var searchResults: [SearchResult] = []
     @State private var selectedResult: SearchResult?
     @State private var destination: LibraryDestination?
@@ -108,6 +109,7 @@ public struct MainContentView: View {
         VStack(spacing: 0) {
             SearchBarView(
                 query: $query,
+                exactImageTextOnly: $exactImageTextOnly,
                 onSearch: performSearch,
                 onClear: {
                     destination = nil
@@ -179,7 +181,8 @@ public struct MainContentView: View {
 
     private var resultTitle: String {
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Results for “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”"
+            let prefix = exactImageTextOnly ? "Exact text" : "Results"
+            return "\(prefix) for “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”"
         }
         switch destination {
         case .category(let name): return name
@@ -238,7 +241,11 @@ public struct MainContentView: View {
         searchError = nil
         Task {
             do {
-                searchResults = try await env.searchService.search(query: cleanQuery, limit: 100)
+                searchResults = try await env.searchService.search(
+                    query: cleanQuery,
+                    filter: SearchFilter(exactImageTextOnly: exactImageTextOnly),
+                    limit: 100
+                )
                 selectedResult = nil
             } catch {
                 searchResults = []

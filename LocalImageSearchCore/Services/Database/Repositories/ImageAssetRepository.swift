@@ -114,6 +114,53 @@ public struct ImageAssetRepository: Sendable {
         }
     }
 
+    /// Returns true only when an asset has unfinished work. Existing vision analysis is
+    /// intentionally provider/version agnostic: rescanning must never spend money again
+    /// unless the source file changed or the user explicitly requests reanalysis.
+    public func needsIndexing(assetID: Int64, embeddingFingerprint: EmbeddingFingerprint?) throws -> Bool {
+        try database.read { db in
+            var arguments: StatementArguments = [assetID]
+            let embeddingJoin: String
+            if let fingerprint = embeddingFingerprint {
+                embeddingJoin = """
+                LEFT JOIN embedding stored_embedding
+                  ON stored_embedding.analysis_id = analysis.id
+                 AND stored_embedding.engine_kind = ?
+                 AND stored_embedding.model = ?
+                 AND stored_embedding.revision = ?
+                """
+                arguments += [fingerprint.engineKind, fingerprint.model, fingerprint.revision]
+            } else {
+                embeddingJoin = "LEFT JOIN embedding stored_embedding ON 0"
+            }
+
+            let sql = """
+            SELECT asset.content_id AS content_id,
+                   analysis.id AS analysis_id,
+                   stored_embedding.id AS embedding_id
+            FROM image_asset asset
+            LEFT JOIN image_analysis analysis
+              ON analysis.content_id = asset.content_id
+             AND analysis.is_current = 1
+            \(embeddingJoin)
+            WHERE asset.id = ?
+            LIMIT 1
+            """
+
+            // The asset ID is the final placeholder because embedding parameters occur
+            // first in SQL text when that join is present.
+            if let fingerprint = embeddingFingerprint {
+                arguments = [fingerprint.engineKind, fingerprint.model, fingerprint.revision, assetID]
+            }
+            guard let row = try Row.fetchOne(db, sql: sql, arguments: arguments) else { return true }
+            let contentID: Int64? = row["content_id"]
+            let analysisID: Int64? = row["analysis_id"]
+            let embeddingID: Int64? = row["embedding_id"]
+            if contentID == nil || analysisID == nil { return true }
+            return embeddingFingerprint != nil && embeddingID == nil
+        }
+    }
+
     public func countAll() throws -> Int {
         try database.read { db in
             try ImageAssetRecord.fetchCount(db)

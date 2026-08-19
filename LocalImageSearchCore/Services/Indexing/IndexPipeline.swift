@@ -51,13 +51,7 @@ public final class IndexPipeline: Sendable {
 
         // 4. Check if current analysis already exists
         let currentAnalysis: ImageAnalysis
-        if let existing = try analysisRepository.getCurrent(
-            contentID: contentID,
-            baseURLFingerprint: providerConfig.configurationFingerprint,
-            model: providerConfig.model,
-            promptVersion: AnalysisPrompt.currentPromptVersion,
-            schemaVersion: AnalysisPrompt.currentSchemaVersion
-        ) {
+        if let existing = try analysisRepository.getCurrent(contentID: contentID) {
             currentAnalysis = existing
         } else {
             // Build downsampled preview

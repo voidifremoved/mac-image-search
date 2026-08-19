@@ -67,10 +67,11 @@ public struct SearchRepository: Sendable {
     }
 
     public func searchFTS(query: String, limit: Int = 200) throws -> [FTSMatch] {
-        let sanitized = query
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .map { "\"\($0)\"" }
+        let tokens = Self.searchTokens(query)
+        let sanitized = tokens
+            .map { token in
+                token.count >= 3 ? "\"\(token)\"*" : "\"\(token)\""
+            }
             .joined(separator: " OR ")
 
         guard !sanitized.isEmpty else { return [] }
@@ -92,6 +93,73 @@ public struct SearchRepository: Sendable {
                 return FTSMatch(analysisID: analysisID, rank: rank)
             }
         }
+    }
+
+    public func searchFilenames(query: String, limit: Int = 100) throws -> [FTSMatch] {
+        let tokens = Self.searchTokens(query)
+        guard !tokens.isEmpty else { return [] }
+
+        return try database.read { db in
+            let conditions = tokens.map { _ in "lower(asset.relative_path) LIKE ? ESCAPE '\\'" }
+                .joined(separator: " OR ")
+            let patterns = tokens.map { "%\(Self.escapeLikePattern($0.lowercased()))%" }
+            let sql = """
+            SELECT DISTINCT analysis.id
+            FROM image_analysis analysis
+            JOIN image_content content ON content.id = analysis.content_id
+            JOIN image_asset asset ON asset.content_id = content.id
+            WHERE analysis.is_current = 1
+              AND asset.availability = 'present'
+              AND (\(conditions))
+            ORDER BY analysis.created_at DESC
+            LIMIT ?
+            """
+            var arguments = StatementArguments(patterns)
+            arguments += [limit]
+            let ids = try Int64.fetchAll(db, sql: sql, arguments: arguments)
+            return ids.enumerated().map { index, id in
+                FTSMatch(analysisID: id, rank: Double(index))
+            }
+        }
+    }
+
+    /// Finds a contiguous phrase in the model's full image transcription. This is
+    /// intentionally separate from FTS token matching and semantic retrieval.
+    public func searchExactVisibleText(query: String, limit: Int = 200) throws -> [Int64] {
+        let phrase = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !phrase.isEmpty else { return [] }
+
+        return try database.read { db in
+            let sql = """
+            SELECT DISTINCT analysis.id
+            FROM image_analysis analysis
+            JOIN image_content content ON content.id = analysis.content_id
+            JOIN image_asset asset ON asset.content_id = content.id
+            WHERE analysis.is_current = 1
+              AND asset.availability = 'present'
+              AND analysis.visible_text IS NOT NULL
+              AND instr(lower(analysis.visible_text), lower(?)) > 0
+            ORDER BY analysis.created_at DESC
+            LIMIT ?
+            """
+            return try Int64.fetchAll(db, sql: sql, arguments: [phrase, limit])
+        }
+    }
+
+    private static func searchTokens(_ query: String) -> [String] {
+        let stopWords: Set<String> = ["a", "an", "and", "are", "at", "for", "in", "is", "of", "on", "the", "to", "with"]
+        return query
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.lowercased() }
+            .filter { !$0.isEmpty && !stopWords.contains($0) }
+    }
+
+    private static func escapeLikePattern(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
     }
 
     public func getAssetDetails(for analysisIDs: [Int64]) throws -> [Int64: (asset: ImageAsset, content: ImageContent, analysis: ImageAnalysis)] {
