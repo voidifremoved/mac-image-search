@@ -24,6 +24,48 @@ struct DatabaseTests {
         }
     }
 
+    @Test("Persistent catalog survives closing and reopening the application")
+    func testPersistentCatalogSurvivesReopen() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let databaseURL = tempDirectory.appendingPathComponent(AppDatabase.databaseFilename)
+        let folderID: UUID
+
+        do {
+            let database = try AppDatabase.persistent(at: databaseURL)
+            let folderRepository = WatchedFolderRepository(database: database)
+            let assetRepository = ImageAssetRepository(database: database)
+            let folder = WatchedFolder(
+                displayName: "Persistent Pictures",
+                bookmarkData: Data([1, 2, 3]),
+                lastResolvedPath: "/tmp/persistent-pictures"
+            )
+            folderID = folder.id
+            try folderRepository.save(folder)
+            _ = try assetRepository.upsert(ImageAsset(
+                folderID: folder.id,
+                relativePath: "kept.jpg",
+                normalizedRelativePath: "kept.jpg",
+                fileSize: 1_024,
+                modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                lastSeenScanID: UUID()
+            ))
+        }
+
+        do {
+            let reopenedDatabase = try AppDatabase.persistent(at: databaseURL)
+            let folderRepository = WatchedFolderRepository(database: reopenedDatabase)
+            let assetRepository = ImageAssetRepository(database: reopenedDatabase)
+            #expect(try folderRepository.get(id: folderID)?.displayName == "Persistent Pictures")
+            #expect(try assetRepository.countAll() == 1)
+            #expect(try assetRepository.get(
+                folderID: folderID,
+                normalizedRelativePath: "kept.jpg"
+            )?.relativePath == "kept.jpg")
+        }
+    }
+
     @Test("Watched folder CRUD and cascade delete")
     func testWatchedFolderCRUD() throws {
         let db = try AppDatabase.inMemory()
@@ -56,6 +98,67 @@ struct DatabaseTests {
         try folderRepo.delete(id: folder.id)
         #expect(try folderRepo.get(id: folder.id) == nil)
         #expect(try assetRepo.countAll() == 0)
+    }
+
+    @Test("Unchanged rescans preserve content linkage despite legacy file identifiers")
+    func testUnchangedRescanPreservesContentLinkage() throws {
+        let db = try AppDatabase.inMemory()
+        let folderRepo = WatchedFolderRepository(database: db)
+        let assetRepo = ImageAssetRepository(database: db)
+        let contentRepo = ImageContentRepository(database: db)
+        let analysisRepo = ImageAnalysisRepository(database: db)
+        let folder = WatchedFolder(displayName: "Pictures", bookmarkData: Data(), lastResolvedPath: "/tmp/pictures")
+        try folderRepo.save(folder)
+
+        let content = try contentRepo.getOrCreate(sha256: Data(repeating: 0x51, count: 32), byteCount: 2_048)
+        let modifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let firstScanID = UUID()
+        var asset = ImageAsset(
+            folderID: folder.id,
+            relativePath: "photo.jpg",
+            normalizedRelativePath: "photo.jpg",
+            fileResourceID: Data([0x01]),
+            contentID: content.id,
+            fileSize: 2_048,
+            modifiedAt: modifiedAt,
+            pixelWidth: 1_200,
+            pixelHeight: 800,
+            lastSeenScanID: firstScanID
+        )
+        asset = try assetRepo.upsert(asset)
+
+        _ = try analysisRepo.save(ImageAnalysis(
+            contentID: content.id!,
+            providerKind: "test",
+            baseURLFingerprint: "test",
+            model: "vision",
+            description: "A test photo",
+            shortTitle: "Photo",
+            categories: ["test"],
+            objects: [],
+            searchableText: "test photo"
+        ))
+
+        let secondScanID = UUID()
+        let rescanned = ImageAsset(
+            folderID: folder.id,
+            relativePath: "photo.jpg",
+            normalizedRelativePath: "photo.jpg",
+            fileResourceID: Data([0x99]), // Simulates the invalid identifier stored by older builds.
+            fileSize: 2_048,
+            modifiedAt: modifiedAt,
+            lastSeenScanID: secondScanID
+        )
+        let saved = try assetRepo.upsertBatch([rescanned]).first
+
+        #expect(saved?.contentID == content.id)
+        #expect(saved?.pixelWidth == 1_200)
+        #expect(saved?.pixelHeight == 800)
+        #expect(try assetRepo.getAssetsNeedingIndexing(
+            folderID: folder.id,
+            currentScanID: secondScanID,
+            embeddingFingerprint: nil
+        ).isEmpty)
     }
 
     @Test("Duplicate image content linking and analysis FTS indexing")
@@ -243,6 +346,29 @@ struct DatabaseTests {
 
         let next = try jobRepo.nextEligible()
         #expect(next == nil)
+    }
+
+    @Test("Startup reconciliation cancels obsolete queued jobs")
+    func testObsoleteQueuedJobsAreCancelled() throws {
+        let db = try AppDatabase.inMemory()
+        let folderRepo = WatchedFolderRepository(database: db)
+        let assetRepo = ImageAssetRepository(database: db)
+        let jobRepo = IndexJobRepository(database: db)
+        let folder = WatchedFolder(displayName: "Pictures", bookmarkData: Data(), lastResolvedPath: "/tmp/pictures")
+        try folderRepo.save(folder)
+        let asset = try assetRepo.upsert(ImageAsset(
+            folderID: folder.id,
+            relativePath: "complete.jpg",
+            normalizedRelativePath: "complete.jpg",
+            fileSize: 100,
+            modifiedAt: Date(),
+            lastSeenScanID: UUID()
+        ))
+        try jobRepo.enqueue(IndexJob(assetID: asset.id, kind: .analyze))
+        #expect(try jobRepo.countActiveJobs() == 1)
+
+        #expect(try jobRepo.cancelObsoleteActiveJobs(folderID: folder.id, requiredAssetIDs: []) == 1)
+        #expect(try jobRepo.countActiveJobs() == 0)
     }
 
     @Test("Index jobs are processed chronologically")

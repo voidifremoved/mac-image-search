@@ -17,10 +17,11 @@ public struct InspectorView: View {
                     if let thumb = thumbnailStore.thumbnail(
                         for: result.content?.hexSHA256 ?? result.asset.relativePath,
                         sourceURL: result.resolvedURL,
-                        maxPixelSize: 600
+                        maxPixelSize: 4096
                     ) {
                         #if os(macOS)
                         Image(nsImage: thumb)
+                            .interpolation(.high)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .cornerRadius(8)

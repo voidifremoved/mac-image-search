@@ -227,7 +227,9 @@ public struct MainContentView: View {
             if snapshot.processedCount != lastCategoryRefreshCount {
                 lastCategoryRefreshCount = snapshot.processedCount
                 refreshCategories()
-                if let destination, query.isEmpty { browse(destination, showsLoading: false) }
+                if let destination, query.isEmpty {
+                    browse(destination, showsLoading: false, preservesSelection: true)
+                }
             }
             try? await Task.sleep(for: .milliseconds(350))
         }
@@ -256,23 +258,33 @@ public struct MainContentView: View {
         }
     }
 
-    private func browse(_ destination: LibraryDestination, showsLoading: Bool = true) {
+    private func browse(
+        _ destination: LibraryDestination,
+        showsLoading: Bool = true,
+        preservesSelection: Bool = false
+    ) {
         query = ""
         if showsLoading { isLoading = true }
         searchError = nil
         Task {
             do {
+                let refreshedResults: [SearchResult]
                 switch destination {
                 case .all:
-                    searchResults = try await env.searchService.browse(filter: SearchFilter(), limit: 100)
+                    refreshedResults = try await env.searchService.browse(filter: SearchFilter(), limit: 100)
                 case .recent:
-                    searchResults = try await env.searchService.getRecent(limit: 100)
+                    refreshedResults = try await env.searchService.getRecent(limit: 100)
                 case .folder(let folderID):
-                    searchResults = try await env.searchService.browse(filter: SearchFilter(folderID: folderID), limit: 100)
+                    refreshedResults = try await env.searchService.browse(filter: SearchFilter(folderID: folderID), limit: 100)
                 case .category(let category):
-                    searchResults = try await env.searchService.browse(filter: SearchFilter(category: category), limit: 100)
+                    refreshedResults = try await env.searchService.browse(filter: SearchFilter(category: category), limit: 100)
                 }
-                selectedResult = nil
+                searchResults = refreshedResults
+                selectedResult = ResultSelectionPolicy.selectionAfterRefresh(
+                    current: selectedResult,
+                    refreshedResults: refreshedResults,
+                    preservesSelection: preservesSelection
+                )
             } catch {
                 searchResults = []
                 searchError = error.localizedDescription
@@ -310,5 +322,19 @@ public struct MainContentView: View {
             rescan()
         }
         #endif
+    }
+}
+
+enum ResultSelectionPolicy {
+    static func selectionAfterRefresh(
+        current: SearchResult?,
+        refreshedResults: [SearchResult],
+        preservesSelection: Bool
+    ) -> SearchResult? {
+        guard preservesSelection, let current else { return nil }
+        // Prefer the refreshed value so newly available analysis/metadata appears in
+        // the inspector. If filtering or a result limit moved the row off-screen, keep
+        // the existing selection rather than making the detail pane disappear.
+        return refreshedResults.first(where: { $0.id == current.id }) ?? current
     }
 }

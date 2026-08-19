@@ -2,6 +2,7 @@
 set -euo pipefail
 
 APP_NAME="LocalImageSearch"
+BUNDLE_IDENTIFIER="com.localimagesearch.app"
 BUNDLE_DIR="build/${APP_NAME}.app"
 CONTENTS_DIR="${BUNDLE_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -45,7 +46,7 @@ cat << PLIST > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundleExecutable</key>
     <string>LocalImageSearch</string>
     <key>CFBundleIdentifier</key>
-    <string>com.localimagesearch.app</string>
+    <string>${BUNDLE_IDENTIFIER}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

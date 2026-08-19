@@ -87,10 +87,21 @@ public actor IndexCoordinator {
 
         for root in roots {
             let scanID = UUID()
-            let discovered = try fileEnumerator.enumerate(root: root)
+            let existingAssets = try assetRepository.getAssets(folderID: root.folderID)
+            let existingByPath = Dictionary(
+                uniqueKeysWithValues: existingAssets.map { ($0.normalizedRelativePath, $0) }
+            )
+            let discovered = try fileEnumerator.enumerate(root: root, readImageProperties: false)
 
             var assetsToUpsert: [ImageAsset] = []
+            assetsToUpsert.reserveCapacity(discovered.count)
             for item in discovered {
+                let existing = existingByPath[item.normalizedRelativePath]
+                let fileIsUnchanged = existing?.fileSize == item.metadata.fileSize &&
+                    existing?.modifiedAt == item.metadata.modifiedAt
+                let imageProperties = fileIsUnchanged
+                    ? (existing?.pixelWidth, existing?.pixelHeight)
+                    : fileEnumerator.imageProperties(at: item.url)
                 let asset = ImageAsset(
                     folderID: root.folderID,
                     relativePath: item.relativePath,
@@ -99,8 +110,8 @@ public actor IndexCoordinator {
                     fileSize: item.metadata.fileSize,
                     modifiedAt: item.metadata.modifiedAt,
                     createdAt: item.metadata.createdAt,
-                    pixelWidth: item.pixelWidth,
-                    pixelHeight: item.pixelHeight,
+                    pixelWidth: imageProperties.0,
+                    pixelHeight: imageProperties.1,
                     uti: item.uti,
                     lastSeenScanID: scanID,
                     availability: .present
@@ -108,12 +119,23 @@ public actor IndexCoordinator {
                 assetsToUpsert.append(asset)
             }
 
-            try assetRepository.upsertBatch(assetsToUpsert)
+            _ = try assetRepository.upsertBatch(assetsToUpsert)
             _ = try assetRepository.markMissingUnseen(folderID: root.folderID, currentScanID: scanID)
+
+            let assetsNeedingIndexing = try assetRepository.getAssetsNeedingIndexing(
+                folderID: root.folderID,
+                currentScanID: scanID,
+                embeddingFingerprint: embeddingFingerprint
+            )
+            let requiredAssetIDs = Set(assetsNeedingIndexing.compactMap(\.id))
+            _ = try await scheduler.cancelObsoleteJobs(
+                folderID: root.folderID,
+                requiredAssetIDs: requiredAssetIDs
+            )
 
             // Process chronologically. Creation date is preferred; modification date is
             // the stable fallback for formats/filesystems without a creation timestamp.
-            let chronologicalAssets = assetsToUpsert.sorted {
+            let chronologicalAssets = assetsNeedingIndexing.sorted {
                 let lhsDate = $0.createdAt ?? $0.modifiedAt
                 let rhsDate = $1.createdAt ?? $1.modifiedAt
                 if lhsDate == rhsDate { return $0.normalizedRelativePath < $1.normalizedRelativePath }
@@ -123,10 +145,8 @@ public actor IndexCoordinator {
             // Only queue genuinely new or incomplete assets. Interrupted active jobs are
             // already persisted and enqueueJob de-duplicates them.
             for asset in chronologicalAssets {
-                if let savedAsset = try assetRepository.get(folderID: root.folderID, normalizedRelativePath: asset.normalizedRelativePath),
-                   let assetID = savedAsset.id,
-                   try assetRepository.needsIndexing(assetID: assetID, embeddingFingerprint: embeddingFingerprint) {
-                    let fileDate = savedAsset.createdAt ?? savedAsset.modifiedAt
+                if let assetID = asset.id {
+                    let fileDate = asset.createdAt ?? asset.modifiedAt
                     let job = IndexJob(assetID: assetID, kind: .analyze, priority: 1, createdAt: fileDate)
                     if try await scheduler.enqueueJob(job) {
                         totalJobCount += 1

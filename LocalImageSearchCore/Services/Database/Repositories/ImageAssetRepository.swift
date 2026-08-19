@@ -17,11 +17,14 @@ public struct ImageAssetRepository: Sendable {
                 .fetchOne(db) {
                 record.id = existing.id
                 let fileIsUnchanged = existing.fileSize == record.fileSize &&
-                    existing.modifiedAt == record.modifiedAt &&
-                    existing.fileResourceId == record.fileResourceId
+                    existing.modifiedAt == record.modifiedAt
                 if fileIsUnchanged {
                     record.contentId = existing.contentId
+                    record.pixelWidth = record.pixelWidth ?? existing.pixelWidth
+                    record.pixelHeight = record.pixelHeight ?? existing.pixelHeight
+                    record.uti = record.uti ?? existing.uti
                 }
+                record.discoveredAt = existing.discoveredAt
                 try record.update(db)
             } else {
                 try record.insert(db)
@@ -34,8 +37,11 @@ public struct ImageAssetRepository: Sendable {
         }
     }
 
-    public func upsertBatch(_ assets: [ImageAsset]) throws {
+    @discardableResult
+    public func upsertBatch(_ assets: [ImageAsset]) throws -> [ImageAsset] {
         try database.write { db in
+            var savedAssets: [ImageAsset] = []
+            savedAssets.reserveCapacity(assets.count)
             for asset in assets {
                 var record = ImageAssetRecord(from: asset)
                 if let existing = try ImageAssetRecord
@@ -44,16 +50,76 @@ public struct ImageAssetRepository: Sendable {
                     .fetchOne(db) {
                     record.id = existing.id
                     let fileIsUnchanged = existing.fileSize == record.fileSize &&
-                        existing.modifiedAt == record.modifiedAt &&
-                        existing.fileResourceId == record.fileResourceId
+                        existing.modifiedAt == record.modifiedAt
                     if fileIsUnchanged {
                         record.contentId = existing.contentId
+                        record.pixelWidth = record.pixelWidth ?? existing.pixelWidth
+                        record.pixelHeight = record.pixelHeight ?? existing.pixelHeight
+                        record.uti = record.uti ?? existing.uti
                     }
+                    record.discoveredAt = existing.discoveredAt
                     try record.update(db)
                 } else {
                     try record.insert(db)
+                    record.id = db.lastInsertedRowID
+                }
+                if let domain = record.toDomain() {
+                    savedAssets.append(domain)
                 }
             }
+            return savedAssets
+        }
+    }
+
+    /// Fetches every asset from this scan that still lacks content, analysis, or the
+    /// current embedding in one query. Startup previously performed two database reads
+    /// per file even when the library was already complete.
+    public func getAssetsNeedingIndexing(
+        folderID: UUID,
+        currentScanID: UUID,
+        embeddingFingerprint: EmbeddingFingerprint?
+    ) throws -> [ImageAsset] {
+        try database.read { db in
+            var arguments: StatementArguments
+            let embeddingJoin: String
+            let missingEmbeddingCondition: String
+
+            if let fingerprint = embeddingFingerprint {
+                embeddingJoin = """
+                LEFT JOIN embedding stored_embedding
+                  ON stored_embedding.analysis_id = analysis.id
+                 AND stored_embedding.engine_kind = ?
+                 AND stored_embedding.model = ?
+                 AND stored_embedding.revision = ?
+                """
+                missingEmbeddingCondition = "OR stored_embedding.id IS NULL"
+                arguments = [
+                    fingerprint.engineKind,
+                    fingerprint.model,
+                    fingerprint.revision,
+                    folderID.uuidString,
+                    currentScanID.uuidString
+                ]
+            } else {
+                embeddingJoin = ""
+                missingEmbeddingCondition = ""
+                arguments = [folderID.uuidString, currentScanID.uuidString]
+            }
+
+            let sql = """
+            SELECT asset.*
+            FROM image_asset asset
+            LEFT JOIN image_analysis analysis
+              ON analysis.content_id = asset.content_id
+             AND analysis.is_current = 1
+            \(embeddingJoin)
+            WHERE asset.folder_id = ?
+              AND asset.last_seen_scan_id = ?
+              AND (asset.content_id IS NULL OR analysis.id IS NULL \(missingEmbeddingCondition))
+            """
+
+            return try ImageAssetRecord.fetchAll(db, sql: sql, arguments: arguments)
+                .compactMap { $0.toDomain() }
         }
     }
 

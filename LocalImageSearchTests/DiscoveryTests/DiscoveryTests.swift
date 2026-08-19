@@ -85,4 +85,34 @@ struct DiscoveryTests {
         let thumb2 = store.thumbnail(for: "sample_sha", sourceURL: imageURL, maxPixelSize: 32)
         #expect(thumb2 != nil)
     }
+
+    @Test("Thumbnail cache keeps detail previews at their requested resolution")
+    func testThumbnailStoreCachesEachResolutionSeparately() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let imageURL = tempDir.appendingPathComponent("large-sample.png")
+        let context = CGContext(
+            data: nil,
+            width: 512,
+            height: 512,
+            bitsPerComponent: 8,
+            bytesPerRow: 512 * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        let destination = CGImageDestinationCreateWithURL(imageURL as CFURL, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let store = ThumbnailStore(cacheDirectory: tempDir.appendingPathComponent("ThumbCache"))
+        let rowImage = store.thumbnail(for: "shared_sha", sourceURL: imageURL, maxPixelSize: 32)
+        let detailImage = store.thumbnail(for: "shared_sha", sourceURL: imageURL, maxPixelSize: 256)
+
+        #if os(macOS)
+        #expect(rowImage?.representations.first?.pixelsWide == 32)
+        #expect(detailImage?.representations.first?.pixelsWide == 256)
+        #endif
+    }
 }

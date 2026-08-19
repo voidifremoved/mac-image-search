@@ -26,19 +26,24 @@ public final class ThumbnailStore: @unchecked Sendable {
     }
 
     public func thumbnail(for sha256Hex: String, sourceURL: URL, maxPixelSize: CGFloat = 320) -> PlatformImage? {
-        let key = NSString(string: sha256Hex)
+        // A result-row thumbnail and the inspector preview need separate cache entries.
+        // Keying only by content caused whichever size loaded first (usually 240 px) to
+        // be stretched across the large inspector preview.
+        let pixelSize = max(1, Int(maxPixelSize.rounded(.up)))
+        let cacheIdentifier = "\(sha256Hex)-p\(pixelSize)"
+        let key = NSString(string: cacheIdentifier)
         if let cached = memoryCache.object(forKey: key) {
             return cached
         }
 
-        let diskFile = cacheDirectory.appendingPathComponent("\(sha256Hex).jpg")
+        let diskFile = cacheDirectory.appendingPathComponent("\(cacheIdentifier).jpg")
         if let diskImage = PlatformImage(contentsOfFile: diskFile.path) {
             memoryCache.setObject(diskImage, forKey: key)
             return diskImage
         }
 
         // Generate thumbnail
-        guard let generated = generateThumbnail(from: sourceURL, maxPixelSize: maxPixelSize) else {
+        guard let generated = generateThumbnail(from: sourceURL, maxPixelSize: CGFloat(pixelSize)) else {
             return nil
         }
 
@@ -74,7 +79,7 @@ public final class ThumbnailStore: @unchecked Sendable {
         #if os(macOS)
         guard let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff),
-              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.92]) else {
             return
         }
         try? jpeg.write(to: url)

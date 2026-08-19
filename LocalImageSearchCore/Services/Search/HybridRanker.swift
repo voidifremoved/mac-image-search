@@ -6,6 +6,7 @@ public enum HybridRanker {
         public var rrfScore: Float
         public var semanticScore: Float
         public var lexicalScore: Float
+        public var hasLexicalEvidence: Bool
     }
 
     /// Combines vector similarity with deterministic matching across the fields users can see.
@@ -23,8 +24,14 @@ public enum HybridRanker {
         let semanticByID = Dictionary(uniqueKeysWithValues: semanticMatches.map { ($0.analysisID, $0.score) })
         let lexicalRankByID = Dictionary(uniqueKeysWithValues: lexicalMatches.enumerated().map { ($0.element.analysisID, $0.offset) })
         let bestSemantic = semanticMatches.map(\.score).max() ?? -1
-        let semanticIsUseful = bestSemantic >= 0.12
-        let semanticFloor = max(0.12, bestSemantic - 0.20)
+        // Vector indexes always have a nearest neighbor, even when nothing is relevant.
+        // Keep a narrow band near a credible best match; explicit lexical/category
+        // evidence remains eligible independently of this semantic threshold.
+        let hasAnyLexicalMatches = !lexicalMatches.isEmpty
+        let minimumUsefulSemantic: Float = hasAnyLexicalMatches ? 0.45 : 0.32
+        let relativeSemanticWindow: Float = hasAnyLexicalMatches ? 0.05 : 0.08
+        let semanticIsUseful = bestSemantic >= minimumUsefulSemantic
+        let semanticFloor = max(minimumUsefulSemantic, bestSemantic - relativeSemanticWindow)
 
         var results: [ScoredCandidate] = []
         results.reserveCapacity(candidateDetails.count)
@@ -54,18 +61,30 @@ public enum HybridRanker {
             }
 
             // Exact/visible metadata evidence should beat a vaguely related vector result.
-            let combined = semanticRelevance * 0.48 + fieldScore * 0.42 + rankedLexical * 0.10
+            let evidenceBonus: Float = hasLexicalEvidence ? 0.12 : 0
+            let combined = semanticRelevance * 0.48 + fieldScore * 0.42 + rankedLexical * 0.10 + evidenceBonus
+            let minimumScore: Float = hasLexicalEvidence ? 0.08 : 0.34
+            guard combined >= minimumScore else { continue }
             results.append(ScoredCandidate(
                 analysisID: analysisID,
                 rrfScore: combined,
                 semanticScore: rawSemantic == -1 ? 0 : rawSemantic,
-                lexicalScore: fieldScore
+                lexicalScore: fieldScore,
+                hasLexicalEvidence: hasLexicalEvidence
             ))
         }
 
-        return results.sorted {
+        let sorted = results.sorted {
             if $0.rrfScore == $1.rrfScore { return $0.analysisID < $1.analysisID }
             return $0.rrfScore > $1.rrfScore
+        }
+        let semanticOnlyLimit = hasAnyLexicalMatches ? 5 : 16
+        var semanticOnlyCount = 0
+        return sorted.filter { candidate in
+            if candidate.hasLexicalEvidence { return true }
+            guard semanticOnlyCount < semanticOnlyLimit else { return false }
+            semanticOnlyCount += 1
+            return true
         }
     }
 

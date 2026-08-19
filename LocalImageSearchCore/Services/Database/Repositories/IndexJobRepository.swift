@@ -107,4 +107,33 @@ public struct IndexJobRepository: Sendable {
                 .fetchCount(db)
         }
     }
+
+    public func cancelObsoleteActiveJobs(folderID: UUID, requiredAssetIDs: Set<Int64>) throws -> Int {
+        try database.write { db in
+            let activeStates = [
+                IndexJob.JobState.queued.rawValue,
+                IndexJob.JobState.running.rawValue,
+                IndexJob.JobState.retryWaiting.rawValue
+            ]
+            let folderAssetIDs = try Int64.fetchAll(
+                db,
+                sql: "SELECT id FROM image_asset WHERE folder_id = ?",
+                arguments: [folderID.uuidString]
+            )
+            let obsoleteIDs = folderAssetIDs.filter { !requiredAssetIDs.contains($0) }
+            guard !obsoleteIDs.isEmpty else { return 0 }
+
+            try IndexJobRecord
+                .filter(obsoleteIDs.contains(IndexJobRecord.Columns.assetId))
+                .filter(activeStates.contains(IndexJobRecord.Columns.state))
+                .updateAll(
+                    db,
+                    IndexJobRecord.Columns.state.set(to: IndexJob.JobState.cancelled.rawValue),
+                    IndexJobRecord.Columns.finishedAt.set(to: Date()),
+                    IndexJobRecord.Columns.errorCode.set(to: "obsolete_after_reconcile"),
+                    IndexJobRecord.Columns.errorMessage.set(to: "Cancelled because the asset is already fully indexed.")
+                )
+            return db.changesCount
+        }
+    }
 }

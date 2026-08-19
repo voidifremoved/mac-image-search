@@ -14,7 +14,7 @@ public final class FileEnumerator: Sendable {
         public let uti: String?
     }
 
-    public func enumerate(root: ResolvedFolder) throws -> [DiscoveredItem] {
+    public func enumerate(root: ResolvedFolder, readImageProperties: Bool = true) throws -> [DiscoveredItem] {
         let rootURL = root.url
         let options: FileManager.DirectoryEnumerationOptions = root.recursive
             ? [.skipsHiddenFiles, .skipsPackageDescendants]
@@ -53,7 +53,10 @@ public final class FileEnumerator: Sendable {
             ]
             let basicValues = try? fileURL.resourceValues(forKeys: basicKeys)
             let resourceValues = try? fileURL.resourceValues(forKeys: metadataKeys)
-            let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let needsAttributeFallback = resourceValues?.fileSize == nil || resourceValues?.contentModificationDate == nil
+            let attributes = needsAttributeFallback
+                ? try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+                : nil
 
             if basicValues?.isDirectory == true || basicValues?.isPackage == true || basicValues?.isSymbolicLink == true {
                 continue
@@ -80,10 +83,7 @@ public final class FileEnumerator: Sendable {
 
             let normalizedRelative = relativePath.precomposedStringWithCanonicalMapping
 
-            var resourceIDData: Data? = nil
-            if let resID = resourceValues?.fileResourceIdentifier {
-                resourceIDData = withUnsafeBytes(of: resID) { Data($0) }
-            }
+            let resourceIDData = FileIdentityReader.stableResourceIdentifierData(resourceValues?.fileResourceIdentifier)
 
             let metadata = FileMetadata(
                 fileSize: size,
@@ -92,26 +92,32 @@ public final class FileEnumerator: Sendable {
                 fileResourceID: resourceIDData
             )
 
-            // Read dimensions from Image I/O quickly without decoding pixels
-            var pixelWidth: Int? = nil
-            var pixelHeight: Int? = nil
-            if let imageSource = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
-               let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] {
-                pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int
-                pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int
-            }
+            // Startup scans only need stat data. Opening every image through Image I/O
+            // dominates scan time, so callers can defer this work to new/changed files.
+            let properties = readImageProperties ? imageProperties(at: fileURL) : (nil, nil)
 
             results.append(DiscoveredItem(
                 url: fileURL,
                 relativePath: relativePath,
                 normalizedRelativePath: normalizedRelative,
                 metadata: metadata,
-                pixelWidth: pixelWidth,
-                pixelHeight: pixelHeight,
+                pixelWidth: properties.0,
+                pixelHeight: properties.1,
                 uti: resourceValues?.typeIdentifier
             ))
         }
 
         return results
+    }
+
+    public func imageProperties(at fileURL: URL) -> (pixelWidth: Int?, pixelHeight: Int?) {
+        guard let imageSource = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] else {
+            return (nil, nil)
+        }
+        return (
+            properties[kCGImagePropertyPixelWidth] as? Int,
+            properties[kCGImagePropertyPixelHeight] as? Int
+        )
     }
 }

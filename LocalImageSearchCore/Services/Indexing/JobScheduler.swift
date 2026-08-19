@@ -62,4 +62,9 @@ public actor JobScheduler {
     public func activeJobCount() throws -> Int {
         try jobRepository.countActiveJobs()
     }
+
+    @discardableResult
+    public func cancelObsoleteJobs(folderID: UUID, requiredAssetIDs: Set<Int64>) throws -> Int {
+        try jobRepository.cancelObsoleteActiveJobs(folderID: folderID, requiredAssetIDs: requiredAssetIDs)
+    }
 }

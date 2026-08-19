@@ -2,6 +2,10 @@ import Foundation
 import GRDB
 
 public final class AppDatabase: Sendable {
+    public static let bundleIdentifier = "com.localimagesearch.app"
+    public static let supportDirectoryName = "LocalImageSearch"
+    public static let databaseFilename = "catalog.sqlite"
+
     public let dbWriter: any DatabaseWriter
 
     public init(_ dbWriter: any DatabaseWriter) throws {
@@ -32,9 +36,24 @@ public final class AppDatabase: Sendable {
             appropriateFor: nil,
             create: true
         )
-        let directory = appSupport.appendingPathComponent("LocalImageSearch", isDirectory: true)
+
+        // A sandboxed installed app resolves Application Support inside its container.
+        // A raw SwiftPM development build is unsandboxed; when an installed catalog
+        // already exists, point that build at the same durable database instead of
+        // presenting a second empty library.
+        if !appSupport.path.contains("/Library/Containers/\(bundleIdentifier)/Data/") {
+            let installedDatabase = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Containers/\(bundleIdentifier)/Data/Library/Application Support", isDirectory: true)
+                .appendingPathComponent(supportDirectoryName, isDirectory: true)
+                .appendingPathComponent(databaseFilename)
+            if FileManager.default.fileExists(atPath: installedDatabase.path) {
+                return installedDatabase
+            }
+        }
+
+        let directory = appSupport.appendingPathComponent(supportDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("catalog.sqlite")
+        return directory.appendingPathComponent(databaseFilename)
     }
 
     public var migrator: DatabaseMigrator {
