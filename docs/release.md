@@ -14,11 +14,11 @@ Run the verification script:
 
 ## Automated GitHub builds
 
-`.github/workflows/build-and-release.yml` runs on pull requests, pushes to `main`, manual dispatches, and version tags.
+`.github/workflows/build-and-release.yml` runs on pull requests, pushes to `master`, manual dispatches, and version tags.
 
 - Every run builds and tests the native target, then packages a universal Apple Silicon + Intel `LocalImageSearch-macOS.zip` as a 30-day workflow artifact.
 - A tag matching `v*` also creates a permanent GitHub Release and attaches the ZIP and SHA-256 checksum.
-- Create a release with `git tag v1.0.0 && git push origin v1.0.0` after the main build is green.
+- Create a release with `git tag v1.0.0 && git push origin v1.0.0` after the `master` build is green.
 
 ## Developer ID signing and notarization
 
