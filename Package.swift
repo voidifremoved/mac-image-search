@@ -35,6 +35,7 @@ let package = Package(
             name: "LocalImageSearchApp",
             dependencies: ["LocalImageSearchCore"],
             path: "LocalImageSearchApp",
+            exclude: ["LocalImageSearch.entitlements"],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency")
             ]

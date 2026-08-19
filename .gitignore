@@ -7,6 +7,7 @@
 
 # Generated app bundles and build output
 build/
+dist/
 DerivedData/
 
 # Xcode per-user and generated state

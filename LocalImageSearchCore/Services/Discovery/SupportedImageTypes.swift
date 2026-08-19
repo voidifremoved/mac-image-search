@@ -30,11 +30,9 @@ public enum SupportedImageTypes {
             return false
         }
 
-        guard utType.conforms(to: .image) else {
-            return false
-        }
-
-        return true
+        // UTType registries can be incomplete in command-line and CI processes. Image I/O
+        // is the authoritative fallback and also rejects corrupt files with image suffixes.
+        return utType.conforms(to: .image) || probeImageIO(url: url)
     }
 
     public static func probeImageIO(url: URL) -> Bool {

@@ -43,15 +43,26 @@ public final class FileEnumerator: Sendable {
         let rootPath = rootURL.standardizedFileURL.path
 
         for case let fileURL as URL in enumerator {
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)) else {
+            // Fetch identity separately from basic file facts. Some filesystems and CI
+            // volumes do not support every requested resource key; one unavailable key
+            // must not cause an otherwise valid image to disappear from discovery.
+            let basicKeys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]
+            let metadataKeys: Set<URLResourceKey> = [
+                .fileSizeKey, .contentModificationDateKey, .creationDateKey,
+                .fileResourceIdentifierKey, .typeIdentifierKey
+            ]
+            let basicValues = try? fileURL.resourceValues(forKeys: basicKeys)
+            let resourceValues = try? fileURL.resourceValues(forKeys: metadataKeys)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+
+            if basicValues?.isDirectory == true || basicValues?.isPackage == true || basicValues?.isSymbolicLink == true {
                 continue
             }
 
-            if resourceValues.isDirectory == true || resourceValues.isPackage == true || resourceValues.isSymbolicLink == true {
-                continue
-            }
-
-            let size = Int64(resourceValues.fileSize ?? 0)
+            let attributeSize = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let size = Int64(resourceValues?.fileSize ?? 0) > 0
+                ? Int64(resourceValues?.fileSize ?? 0)
+                : attributeSize
             if size <= 0 || size > SupportedImageTypes.maxFileSizeBytes {
                 continue
             }
@@ -70,14 +81,14 @@ public final class FileEnumerator: Sendable {
             let normalizedRelative = relativePath.precomposedStringWithCanonicalMapping
 
             var resourceIDData: Data? = nil
-            if let resID = resourceValues.fileResourceIdentifier {
+            if let resID = resourceValues?.fileResourceIdentifier {
                 resourceIDData = withUnsafeBytes(of: resID) { Data($0) }
             }
 
             let metadata = FileMetadata(
                 fileSize: size,
-                modifiedAt: resourceValues.contentModificationDate ?? Date(),
-                createdAt: resourceValues.creationDate,
+                modifiedAt: resourceValues?.contentModificationDate ?? (attributes?[.modificationDate] as? Date) ?? Date(),
+                createdAt: resourceValues?.creationDate ?? (attributes?[.creationDate] as? Date),
                 fileResourceID: resourceIDData
             )
 
@@ -97,7 +108,7 @@ public final class FileEnumerator: Sendable {
                 metadata: metadata,
                 pixelWidth: pixelWidth,
                 pixelHeight: pixelHeight,
-                uti: resourceValues.typeIdentifier
+                uti: resourceValues?.typeIdentifier
             ))
         }
 

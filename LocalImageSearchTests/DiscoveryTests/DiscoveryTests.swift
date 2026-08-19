@@ -32,7 +32,9 @@ struct DiscoveryTests {
 
         let destination = CGImageDestinationCreateWithURL(imageURL as CFURL, "public.png" as CFString, 1, nil)!
         CGImageDestinationAddImage(destination, cgImage, nil)
-        CGImageDestinationFinalize(destination)
+        #expect(CGImageDestinationFinalize(destination))
+        #expect(FileManager.default.fileExists(atPath: imageURL.path))
+        #expect(SupportedImageTypes.isSupportedImage(url: imageURL))
 
         // Create an unsupported SVG dummy file
         let svgURL = tempDir.appendingPathComponent("icon.svg")
