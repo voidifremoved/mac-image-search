@@ -19,7 +19,7 @@ public struct AIProviderConfiguration: Sendable, Codable, Equatable {
     public static let defaultAPIKeyIdentifier = "default_ai_provider_key"
     public static let defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
     public static let defaultChatPath = "/chat/completions"
-    public static let defaultOpenRouterModel = "google/gemini-2.5-flash"
+    public static let defaultOpenRouterModel = "google/gemini-3.7-flash"
     private static let userDefaultsKey = "saved_ai_provider_configuration"
 
     public init(

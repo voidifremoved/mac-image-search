@@ -4,6 +4,11 @@ import Foundation
 
 @Suite("AI Provider & Vision Analysis Tests")
 struct AITests {
+    @Test("OpenRouter uses the preferred Gemini model by default")
+    func testDefaultOpenRouterModel() {
+        #expect(AIProviderConfiguration().model == "google/gemini-3.7-flash")
+    }
+
     @Test("Keychain store saves, reads, and deletes API secrets")
     func testKeychainStore() throws {
         let store = InMemorySecretStore()

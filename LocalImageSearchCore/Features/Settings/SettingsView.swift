@@ -45,7 +45,7 @@ public struct SettingsView: View {
                         if newPreset == .openRouter {
                             env.providerConfig.baseURLString = AIProviderConfiguration.defaultOpenRouterBaseURL
                             if env.providerConfig.model.isEmpty {
-                                env.providerConfig.model = "google/gemini-2.5-flash"
+                                env.providerConfig.model = AIProviderConfiguration.defaultOpenRouterModel
                             }
                         }
                     }
